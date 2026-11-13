@@ -74,6 +74,14 @@ public final class StratosCommand {
                 state.type().name().toLowerCase(Locale.ROOT), state.intensity(), state.windFactor(),
                 state.next().name().toLowerCase(Locale.ROOT), state.nextIntensity(), in);
         source.sendSuccess(() -> Component.literal(text), false);
+        // 0.4.0: whether the spell is a sandstorm where the command's source stands.
+        net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(source.getPosition());
+        if (state.type() != Weather.Type.CLEAR
+                && com.solarbiscuit.atmosphera.stratos.Sandstorm.sandy(level.getBiome(pos), pos)) {
+            String sand = String.format(Locale.ROOT, "Stratos: a sandstorm here (strength %.2f)",
+                    com.solarbiscuit.atmosphera.stratos.Sandstorm.strength(state.type()));
+            source.sendSuccess(() -> Component.literal(sand), false);
+        }
         return 1;
     }
 }

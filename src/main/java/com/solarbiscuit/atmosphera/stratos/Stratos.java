@@ -34,6 +34,7 @@ public final class Stratos {
     public Stratos() {
         StratosServerConfig.register();
         WeatherModel.register();
+        com.solarbiscuit.atmosphera.stratos.server.SandstormEffects.register();
         MinecraftForge.EVENT_BUS.addListener((RegisterCommandsEvent e) -> StratosCommand.register(e.getDispatcher()));
         if (FMLEnvironment.dist == Dist.CLIENT) {
             com.solarbiscuit.atmosphera.stratos.client.StratosClient.init();

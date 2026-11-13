@@ -14,6 +14,7 @@ public final class StratosServerConfig {
     public static ForgeConfigSpec.DoubleValue lightRain;
     public static ForgeConfigSpec.DoubleValue heavyRain;
     public static ForgeConfigSpec.DoubleValue contrast;
+    public static ForgeConfigSpec.BooleanValue sandstormEffects;
     private static ForgeConfigSpec spec;
 
     private StratosServerConfig() {
@@ -31,6 +32,9 @@ public final class StratosServerConfig {
                 .defineInRange("heavy_rain_share", 0.15, 0.0, 1.0);
         contrast = b.comment("How patchy the rain is: 0 the same everywhere, 1 heavy and light cells side by side "
                 + "(about a kilometre across, drifting with the spell).").defineInRange("regional_contrast", 0.35, 0.0, 1.0);
+        sandstormEffects = b.comment("0.4.0: in a sandstorm (a rain spell over a dry sandy biome), walking into the wind is "
+                + "up to 12% slower and hostile mobs within 64 blocks of the player lose up to 40% of their follow range. "
+                + "Off: sandstorms are only seen.").define("sandstorm_effects", true);
         b.pop();
         spec = b.build();
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, spec, "Atmosphera/stratos-server.toml");

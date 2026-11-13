@@ -52,7 +52,12 @@ import org.lwjgl.system.MemoryStack;
  */
 public final class RainRenderer {
     private static final ResourceLocation RAIN = new ResourceLocation("textures/environment/rain.png");
-    private static final int MAX_STREAKS = 12000;
+    /** 0.4.0: heavy rain and storms draw more streaks (12000 before). */
+    private static final int MAX_STREAKS = 16000;
+    /** 0.4.0: sand streaks at full sandstorm, before the density option. */
+    private static final int SAND_STREAKS = 6000;
+    /** 0.4.0: the sandstorm's strength here, eased over about 5 s. */
+    private static float sandLevel;
     private static AtmosFeature feature;
     private static int program;
     private static int[] u;
@@ -94,12 +99,25 @@ public final class RainRenderer {
         float partial = ctx.partialTick();
         float rain = level.getRainLevel(partial);
         Vec3 camera = ctx.camera();
-        if (rain < 0.01f || mc.gameRenderer.getMainCamera().getFluidInCamera() != FogType.NONE) {
+        float dt = (float) Math.min(0.25, Math.max(0.0, com.solarbiscuit.atmosphera.lib.wind.AtmosClock.deltaSeconds()));
+        POS.set(camera.x, camera.y, camera.z);
+        net.minecraft.core.Holder<Biome> biome = level.getBiome(POS);
+        Biome.Precipitation precipitation = biome.value().getPrecipitationAt(POS);
+        Weather.current(level, partial, WEATHER);
+        Weather.Type kind = WEATHER.modelled ? WEATHER.type : Weather.Type.RAIN;
+        // 0.4.0: a rain spell over a dry sandy biome blows sand (Sandstorm), eased in and out over about 5 s.
+        boolean sandy = precipitation == Biome.Precipitation.NONE && com.solarbiscuit.atmosphera.stratos.Sandstorm.sandy(biome, POS);
+        Wind.sample(level, camera.x, camera.y, camera.z, partial, WIND);
+        float sandTarget = sandy && rain > 0.01f
+                ? com.solarbiscuit.atmosphera.stratos.Sandstorm.strength(kind) * (0.6f + 0.4f * WIND.strength) * Math.min(1f, rain * 1.5f)
+                : 0f;
+        sandLevel += (sandTarget - sandLevel) * (1f - (float) Math.exp(-dt / 5f));
+        boolean sand = sandy && sandLevel > 0.01f;
+        if ((rain < 0.01f && !sand) || mc.gameRenderer.getMainCamera().getFluidInCamera() != FogType.NONE) {
             return;
         }
-        POS.set(camera.x, camera.y, camera.z);
-        if (level.getBiome(POS).value().getPrecipitationAt(POS) != Biome.Precipitation.RAIN) {
-            // Snow (or a dry biome) here: vanilla draws it.
+        if (precipitation != Biome.Precipitation.RAIN && !sand) {
+            // Snow (or a dry biome with no storm) here: vanilla draws it.
             return;
         }
         RenderTargets.Scene scene = RenderTargets.scene();
@@ -107,14 +125,40 @@ public final class RainRenderer {
             return;
         }
         ColumnField.use(COLUMN_OWNER, level, 256);
-        Weather.current(level, partial, WEATHER);
         float intensity = Math.max(WEATHER.intensity, 0.05f);
-        int count = (int) Math.min(MAX_STREAKS, 9000f * intensity * StratosClient.density.get().floatValue());
+        // 0.4.0: the look of each kind of rain (count, length, width, opacity, darkness, fall speed, slant).
+        float countK = 1f, lenK = 1f, widthK = 1f, alphaK = 1f, dark = 1f, speedK = 1f, slantK = 1f;
+        switch (kind) {
+            case DRIZZLE -> {
+                countK = 0.6f;
+                lenK = 0.6f;
+                widthK = 0.8f;
+                alphaK = 0.7f;
+                speedK = 0.85f;
+            }
+            case LIGHT_RAIN -> {
+                countK = 0.8f;
+                lenK = 0.85f;
+                alphaK = 0.85f;
+            }
+            case HEAVY_RAIN, STORM -> {
+                countK = 1.35f;
+                lenK = 1.25f;
+                widthK = 1.1f;
+                alphaK = 1.15f;
+                dark = 0.8f;
+                slantK = kind == Weather.Type.STORM ? 1.3f : 1f;
+            }
+            default -> {
+            }
+        }
+        float density = StratosClient.density.get().floatValue();
+        int count = sand ? (int) (SAND_STREAKS * sandLevel * density)
+                : (int) Math.min(MAX_STREAKS, 9000f * intensity * countK * density);
         if (count <= 0) {
             return;
         }
-        Wind.sample(level, camera.x, camera.y, camera.z, partial, WIND);
-        float slant = 0.15f + 0.55f * WIND.strength + 0.2f * WIND.gust;
+        float slant = (0.15f + 0.55f * WIND.strength + 0.2f * WIND.gust) * slantK;
         float[] fog = RenderSystem.getShaderFogColor();
         float sky = level.getSkyDarken(partial);
         FrameUniforms.update(AtmosClient.frame());
@@ -139,9 +183,21 @@ public final class RainRenderer {
             // The camera's place within the 48-block tile (double precision here, small floats in the shader).
             GL20C.glUniform4f(u[4], (float) floorMod(camera.x, 48.0), (float) camera.y, (float) floorMod(camera.z, 48.0),
                     (float) (t % 3600.0));
-            GL20C.glUniform4f(u[5], WIND.dirX * slant, WIND.dirZ * slant, ColumnField.ready() ? 1f : 0f,
-                    0.5f * StratosClient.opacity.get().floatValue() * Math.min(1f, rain * 1.5f));
-            GL20C.glUniform4f(u[6], fog[0] * sky, fog[1] * sky, fog[2] * sky, 0f);
+            float opacity = StratosClient.opacity.get().floatValue();
+            if (sand) {
+                // Sand: the wind's direction (not the slant), the sand's colour in the day's light, faster in a storm.
+                float[] col = com.solarbiscuit.atmosphera.stratos.Sandstorm.colour(biome);
+                float light = 0.25f + 0.75f * sky;
+                GL20C.glUniform4f(u[5], WIND.dirX, WIND.dirZ, ColumnField.ready() ? 1f : 0f,
+                        0.42f * opacity * Math.min(1f, 0.4f + sandLevel));
+                GL20C.glUniform4f(u[6], col[0] * light, col[1] * light, col[2] * light, 1f);
+                GL20C.glUniform4f(u[7], 1f, 1f, 8f + 12f * sandLevel, 1f);
+            } else {
+                GL20C.glUniform4f(u[5], WIND.dirX * slant, WIND.dirZ * slant, ColumnField.ready() ? 1f : 0f,
+                        0.5f * opacity * alphaK * Math.min(1f, rain * 1.5f));
+                GL20C.glUniform4f(u[6], fog[0] * sky, fog[1] * sky, fog[2] * sky, dark);
+                GL20C.glUniform4f(u[7], lenK, widthK, speedK, 0f);
+            }
             GL11C.glEnable(GL11C.GL_BLEND);
             GL14C.glBlendFuncSeparate(GL11C.GL_SRC_ALPHA, GL11C.GL_ONE_MINUS_SRC_ALPHA, GL11C.GL_ZERO, GL11C.GL_ONE);
             GL30C.glBindVertexArray(vao);
@@ -169,7 +225,7 @@ public final class RainRenderer {
             failed = true;
             return false;
         }
-        String[] names = {"u_Depth", "u_Rain", "atmos_ColumnField", "u_ViewProj", "u_Cam", "u_Wind", "u_Col"};
+        String[] names = {"u_Depth", "u_Rain", "atmos_ColumnField", "u_ViewProj", "u_Cam", "u_Wind", "u_Col", "u_Kind"};
         u = new int[names.length];
         for (int i = 0; i < names.length; i++) {
             u[i] = GL20C.glGetUniformLocation(program, names[i]);
@@ -197,6 +253,7 @@ public final class RainRenderer {
             uniform mat4 u_ViewProj;
             uniform vec4 u_Cam;    // xyz: the camera's place in the 48-block tile (x, z) and its world y; w: seconds
             uniform vec4 u_Wind;   // xy: slant (horizontal blocks per block of fall), z: 1 = column field bound, w: alpha
+            uniform vec4 u_Kind;   // 0.4.0: x length, y width, z fall speed (sand: blowing speed), w 1 = sand
             out vec2 v_Uv;
             out vec3 v_Rel;
             out float v_Fade;
@@ -215,12 +272,36 @@ public final class RainRenderer {
                 uint h = rain_hash(id * 2654435761u + 17u);
                 // A fixed place in the world's 48-block tiles, wrapped into the tile round the camera.
                 vec2 p = vec2(rain_unit(h), rain_unit(rain_hash(h))) * 48.0;
+                int corner = gl_VertexID % 6;
+                vec2 q = corner == 0 ? vec2(0.0, 0.0) : corner == 1 ? vec2(1.0, 0.0) : corner == 2 ? vec2(1.0, 1.0)
+                        : corner == 3 ? vec2(0.0, 0.0) : corner == 4 ? vec2(1.0, 1.0) : vec2(0.0, 1.0);
+                if (u_Kind.w > 0.5) {
+                    // 0.4.0 sandstorm: short soft streaks blowing nearly level along the wind, most of them low over the
+                    // ground, each at its own speed and height, swirling a little.
+                    vec2 wdir = normalize(u_Wind.xy + vec2(1e-4, 0.0));
+                    float spd = u_Kind.z * (0.7 + 0.6 * rain_unit(rain_hash(h + 1u)));
+                    vec2 srel = mod(p + wdir * (u_Cam.w * spd) - u_Cam.xz + 24.0, 48.0) - 24.0;
+                    float hy = rain_unit(rain_hash(h + 2u));
+                    float sy = -3.0 + 14.0 * hy * hy + 0.6 * sin(u_Cam.w * 1.7 + float(h & 255u));
+                    vec3 along = normalize(vec3(wdir.x, 0.12 * (rain_unit(rain_hash(h + 5u)) - 0.5), wdir.y));
+                    vec3 sbase = vec3(srel.x, sy, srel.y);
+                    float slen = u_Kind.x * (0.35 + 0.5 * rain_unit(rain_hash(h + 3u)));
+                    vec3 sside = normalize(cross(along, normalize(sbase) + vec3(0.0, 1e-4, 0.0)));
+                    float swidth = u_Kind.y * (0.03 + 0.002 * length(sbase));
+                    vec3 spos = sbase + sside * (q.x - 0.5) * swidth + along * q.y * slen;
+                    v_Uv = q;
+                    v_Rel = spos;
+                    v_Variant = float(h & 3u);
+                    v_Fade = smoothstep(0.6, 2.0, length(sbase)) * (1.0 - smoothstep(18.0, 24.0, length(sbase.xz)));
+                    gl_Position = u_ViewProj * vec4(spos, 1.0);
+                    return;
+                }
                 vec2 rel = mod(p - u_Cam.xz + 24.0, 48.0) - 24.0;
                 // Falling at 8-11 blocks a second through a 44-block column round the eye.
-                float speed = 8.0 + 3.0 * rain_unit(rain_hash(h + 1u));
+                float speed = (8.0 + 3.0 * rain_unit(rain_hash(h + 1u))) * u_Kind.z;
                 float phase = rain_unit(rain_hash(h + 2u));
                 float y = 22.0 - mod(u_Cam.w * speed + phase * 44.0, 44.0);
-                float len = 0.55 + 0.4 * rain_unit(rain_hash(h + 3u));
+                float len = (0.55 + 0.4 * rain_unit(rain_hash(h + 3u))) * u_Kind.x;
                 // 0.2.2: each streak has its own slant (+-25%), and a slow gust swell per 16-block patch of the tile
                 // tilts the rain there more or less over time, so the angle varies across the view.
                 vec2 cell = floor(p / 16.0);
@@ -233,10 +314,7 @@ public final class RainRenderer {
                 vec3 base = vec3(rel.x, y, rel.y) - vec3(slant.x, 0.0, slant.y) * y;
                 // A thin quad along the fall, turned to face the eye.
                 vec3 side = normalize(cross(fall, normalize(base) + vec3(0.0, 1e-4, 0.0)));
-                float width = 0.022 + 0.0025 * length(base);
-                int corner = gl_VertexID % 6;
-                vec2 q = corner == 0 ? vec2(0.0, 0.0) : corner == 1 ? vec2(1.0, 0.0) : corner == 2 ? vec2(1.0, 1.0)
-                        : corner == 3 ? vec2(0.0, 0.0) : corner == 4 ? vec2(1.0, 1.0) : vec2(0.0, 1.0);
+                float width = (0.022 + 0.0025 * length(base)) * u_Kind.y;
                 vec3 pos = base + side * (q.x - 0.5) * width + fall * q.y * len;
                 v_Uv = q;
                 v_Rel = pos;
@@ -252,7 +330,8 @@ public final class RainRenderer {
             uniform sampler2D u_Depth;
             uniform sampler2D u_Rain;
             uniform vec4 u_Wind;
-            uniform vec4 u_Col;    // rgb: the light of the air (fog colour times daylight)
+            uniform vec4 u_Col;    // rgb: the light of the air (fog colour times daylight); w: 0.4.0 darkness (rain)
+            uniform vec4 u_Kind;   // 0.4.0: w 1 = sand
             in vec2 v_Uv;
             in vec3 v_Rel;
             in float v_Fade;
@@ -272,6 +351,16 @@ public final class RainRenderer {
                         discard;
                     }
                 }
+                if (u_Kind.w > 0.5) {
+                    // Sand: a soft streak, fading at both ends.
+                    float sa = (1.0 - abs(v_Uv.x * 2.0 - 1.0)) * smoothstep(0.0, 0.35, v_Uv.y) * smoothstep(1.0, 0.6, v_Uv.y)
+                            * u_Wind.w * v_Fade;
+                    if (sa < 0.003) {
+                        discard;
+                    }
+                    fragColor = vec4(u_Col.rgb, sa);
+                    return;
+                }
                 // The streak's own profile, modulated by the resource pack's rain texture (0.2.1: the texture alone is
                 // mostly transparent between its drops, so most streaks drew nothing).
                 vec2 uv = vec2((v_Variant + v_Uv.x) * 0.25, v_Uv.y * 0.25);
@@ -280,7 +369,8 @@ public final class RainRenderer {
                 if (a < 0.003) {
                     discard;
                 }
-                fragColor = vec4(mix(u_Col.rgb, vec3(0.75, 0.8, 0.88), 0.35), a);
+                // 0.4.0: heavy rain and storms a little darker (u_Col.w).
+                fragColor = vec4(mix(u_Col.rgb, vec3(0.75, 0.8, 0.88), 0.35) * u_Col.w, a);
             }
             """;
 }
