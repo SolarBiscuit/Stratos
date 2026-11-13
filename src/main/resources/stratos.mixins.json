@@ -1,0 +1,13 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "com.solarbiscuit.atmosphera.stratos.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "stratos.refmap.json",
+  "client": [
+    "LevelRendererPrecipitationMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
