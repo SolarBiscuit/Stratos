@@ -59,10 +59,12 @@ public final class RainRenderer {
     /** 0.4.0: the sandstorm's strength here, eased over about 5 s. */
     private static float sandLevel;
     private static AtmosFeature feature;
-    private static int program;
-    private static int[] u;
+    /** 0.4.3: the shared post-program holder (lib 0.11.0). */
+    private static final com.solarbiscuit.atmosphera.lib.gpu.PostProgram PROGRAM =
+            new com.solarbiscuit.atmosphera.lib.gpu.PostProgram(Stratos.LOGGER, "Stratos rain", "Stratos rain",
+                    () -> RainRenderer.VERTEX, () -> GlslPrograms.header() + ColumnFieldShader.GLSL + RainRenderer.FRAGMENT,
+                    "u_Depth", "u_Rain", "atmos_ColumnField", "u_ViewProj", "u_Cam", "u_Wind", "u_Col", "u_Kind");
     private static int vao;
-    private static boolean failed;
     private static long drawnFrame = -1;
     private static final Weather.Sample WEATHER = new Weather.Sample();
     private static final WindVector WIND = new WindVector();
@@ -93,7 +95,7 @@ public final class RainRenderer {
     private static void render(PostPasses.Context ctx) {
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
-        if (level == null || failed || Minecraft.useShaderTransparency()) {
+        if (level == null || PROGRAM.failed() || Minecraft.useShaderTransparency()) {
             return;
         }
         float partial = ctx.partialTick();
@@ -111,7 +113,7 @@ public final class RainRenderer {
         float sandTarget = sandy && rain > 0.01f
                 ? com.solarbiscuit.atmosphera.stratos.Sandstorm.strength(kind) * (0.6f + 0.4f * WIND.strength) * Math.min(1f, rain * 1.5f)
                 : 0f;
-        sandLevel += (sandTarget - sandLevel) * (1f - (float) Math.exp(-dt / 5f));
+        sandLevel = com.solarbiscuit.atmosphera.lib.util.AtmosMath.approach(sandLevel, sandTarget, dt, 5f);
         boolean sand = sandy && sandLevel > 0.01f;
         if ((rain < 0.01f && !sand) || mc.gameRenderer.getMainCamera().getFluidInCamera() != FogType.NONE) {
             return;
@@ -121,7 +123,7 @@ public final class RainRenderer {
             return;
         }
         RenderTargets.Scene scene = RenderTargets.scene();
-        if (!scene.usable() || program == 0 && !compile()) {
+        if (!scene.usable() || !compile()) {
             return;
         }
         ColumnField.use(COLUMN_OWNER, level, 256);
@@ -174,29 +176,29 @@ public final class RainRenderer {
             GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, mc.getTextureManager().getTexture(RAIN).getId());
             GL13C.glActiveTexture(GL13C.GL_TEXTURE14);
             GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, ColumnField.ready() ? ColumnField.texture() : 0);
-            GL20C.glUseProgram(program);
-            GL20C.glUniform1i(u[0], 12);
-            GL20C.glUniform1i(u[1], 13);
-            GL20C.glUniform1i(u[2], 14);
-            GL20C.glUniformMatrix4fv(u[3], false, ctx.viewProjection().get(stack.mallocFloat(16)));
+            GL20C.glUseProgram(PROGRAM.id());
+            GL20C.glUniform1i(PROGRAM.u(0), 12);
+            GL20C.glUniform1i(PROGRAM.u(1), 13);
+            GL20C.glUniform1i(PROGRAM.u(2), 14);
+            GL20C.glUniformMatrix4fv(PROGRAM.u(3), false, ctx.viewProjection().get(stack.mallocFloat(16)));
             double t = AtmosClock.worldSeconds(level, partial);
             // The camera's place within the 48-block tile (double precision here, small floats in the shader).
-            GL20C.glUniform4f(u[4], (float) floorMod(camera.x, 48.0), (float) camera.y, (float) floorMod(camera.z, 48.0),
+            GL20C.glUniform4f(PROGRAM.u(4), (float) floorMod(camera.x, 48.0), (float) camera.y, (float) floorMod(camera.z, 48.0),
                     (float) (t % 3600.0));
             float opacity = StratosClient.opacity.get().floatValue();
             if (sand) {
                 // Sand: the wind's direction (not the slant), the sand's colour in the day's light, faster in a storm.
                 float[] col = com.solarbiscuit.atmosphera.stratos.Sandstorm.colour(biome);
                 float light = 0.25f + 0.75f * sky;
-                GL20C.glUniform4f(u[5], WIND.dirX, WIND.dirZ, ColumnField.ready() ? 1f : 0f,
+                GL20C.glUniform4f(PROGRAM.u(5), WIND.dirX, WIND.dirZ, ColumnField.ready() ? 1f : 0f,
                         0.42f * opacity * Math.min(1f, 0.4f + sandLevel));
-                GL20C.glUniform4f(u[6], col[0] * light, col[1] * light, col[2] * light, 1f);
-                GL20C.glUniform4f(u[7], 1f, 1f, 8f + 12f * sandLevel, 1f);
+                GL20C.glUniform4f(PROGRAM.u(6), col[0] * light, col[1] * light, col[2] * light, 1f);
+                GL20C.glUniform4f(PROGRAM.u(7), 1f, 1f, 8f + 12f * sandLevel, 1f);
             } else {
-                GL20C.glUniform4f(u[5], WIND.dirX * slant, WIND.dirZ * slant, ColumnField.ready() ? 1f : 0f,
+                GL20C.glUniform4f(PROGRAM.u(5), WIND.dirX * slant, WIND.dirZ * slant, ColumnField.ready() ? 1f : 0f,
                         0.5f * opacity * alphaK * Math.min(1f, rain * 1.5f));
-                GL20C.glUniform4f(u[6], fog[0] * sky, fog[1] * sky, fog[2] * sky, dark);
-                GL20C.glUniform4f(u[7], lenK, widthK, speedK, 0f);
+                GL20C.glUniform4f(PROGRAM.u(6), fog[0] * sky, fog[1] * sky, fog[2] * sky, dark);
+                GL20C.glUniform4f(PROGRAM.u(7), lenK, widthK, speedK, 0f);
             }
             GL11C.glEnable(GL11C.GL_BLEND);
             GL14C.glBlendFuncSeparate(GL11C.GL_SRC_ALPHA, GL11C.GL_ONE_MINUS_SRC_ALPHA, GL11C.GL_ZERO, GL11C.GL_ONE);
@@ -218,33 +220,25 @@ public final class RainRenderer {
         return v - Math.floor(v / m) * m;
     }
 
+
+    /** The program and the empty vertex array the streaks are drawn with; false when the program did not compile. */
     private static boolean compile() {
-        program = GlslPrograms.compile("Stratos rain", VERTEX, GlslPrograms.header() + ColumnFieldShader.GLSL + FRAGMENT);
-        if (program == 0) {
-            Stratos.LOGGER.error("[Atmosphera] Stratos rain is off: its program did not compile (see above)");
-            failed = true;
+        if (!PROGRAM.ready()) {
             return false;
         }
-        String[] names = {"u_Depth", "u_Rain", "atmos_ColumnField", "u_ViewProj", "u_Cam", "u_Wind", "u_Col", "u_Kind"};
-        u = new int[names.length];
-        for (int i = 0; i < names.length; i++) {
-            u[i] = GL20C.glGetUniformLocation(program, names[i]);
+        if (vao == 0) {
+            vao = GpuResources.vertexArray("Stratos rain");
         }
-        vao = GpuResources.vertexArray("Stratos rain");
         return true;
     }
 
     /** Frees the program (the lib's shader reload). */
     public static void release() {
-        if (program != 0) {
-            GpuResources.deleteProgram(program);
-            program = 0;
-        }
+        PROGRAM.release();
         if (vao != 0) {
             GpuResources.deleteVertexArray(vao);
             vao = 0;
         }
-        failed = false;
     }
 
     /** Streaks from gl_InstanceID and gl_VertexID alone (no vertex buffer). */

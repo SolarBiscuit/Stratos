@@ -1,8 +1,11 @@
 package com.solarbiscuit.atmosphera.stratos.server;
 
+import com.electronwill.nightconfig.core.file.CommentedFileConfig;
 import net.minecraftforge.common.ForgeConfigSpec;
 import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.config.ModConfig;
+import net.minecraftforge.fml.event.config.ModConfigEvent;
+import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
 
 /**
  * {@code config/Atmosphera/stratos-server.toml}: the weather model's settings. Common config (Forge's COMMON type), so
@@ -16,6 +19,8 @@ public final class StratosServerConfig {
     public static ForgeConfigSpec.DoubleValue contrast;
     public static ForgeConfigSpec.BooleanValue sandstormEffects;
     private static ForgeConfigSpec spec;
+    /** 0.4.4: kept from Forge's load event, so {@code /stratos reload} can re-read the file itself. */
+    private static volatile ModConfig config;
 
     private StratosServerConfig() {
     }
@@ -37,7 +42,36 @@ public final class StratosServerConfig {
                 + "Off: sandstorms are only seen.").define("sandstorm_effects", true);
         b.pop();
         spec = b.build();
-        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, spec, "Atmosphera/stratos-server.toml");
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, spec,
+                com.solarbiscuit.atmosphera.lib.options.AtmosPaths.relative("stratos-server.toml"));
+        FMLJavaModLoadingContext.get().getModEventBus().addListener((ModConfigEvent.Loading e) -> {
+            if (e.getConfig().getSpec() == spec) {
+                config = e.getConfig();
+            }
+        });
+    }
+
+    /**
+     * 0.4.4 (B1): re-reads stratos-server.toml from disk now. Forge's file watcher did not apply a saved edit in the
+     * 2026-11-16 server test (no reload logged), so {@code /stratos reload} no longer relies on it. Values out of range
+     * are corrected and written back, as Forge does. Returns false when the file is not loaded or could not be read.
+     */
+    public static boolean reloadFromDisk() {
+        ModConfig c = config;
+        if (c == null || !(c.getConfigData() instanceof CommentedFileConfig file)) {
+            return false;
+        }
+        try {
+            file.load();
+            if (spec.correct(file) > 0) {
+                file.save();
+            }
+            spec.afterReload();
+            return true;
+        } catch (RuntimeException e) {
+            com.solarbiscuit.atmosphera.stratos.Stratos.LOGGER.warn("Could not reload stratos-server.toml: {}", e.toString());
+            return false;
+        }
     }
 
     public static boolean loaded() {

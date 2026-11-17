@@ -16,7 +16,7 @@ Weather for the Atmosphera suite (Forge 1.20.1). Version 0.4.0.
   roofs. Snow stays vanilla's.
 - **Gameplay is vanilla's:** crops, fire and mob spawning follow vanilla's rain. The one exception is the optional sandstorm effects (below).
 
-Needs AtmospheraLib 0.10.1 or newer. Optional on both sides: a client without Stratos joins a server with it, and the
+Needs AtmospheraLib 0.11.0 or newer (current builds: Stratos 0.4.4, AtmospheraLib 0.11.3). Optional on both sides: a client without Stratos joins a server with it, and the
 reverse. On a server without Stratos, clients use vanilla's rain levels (no forecast).
 
 ## Settings

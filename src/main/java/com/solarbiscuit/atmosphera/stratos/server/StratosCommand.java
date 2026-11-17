@@ -14,8 +14,9 @@ import java.util.Locale;
 /**
  * {@code /stratos} (server, operators): {@code status} (the level's weather and forecast), {@code set <kind>
  * [intensity]} (holds a kind for the rest of the rain spell; start rain first with {@code /weather rain}), {@code auto}
- * (back to the model) and {@code reload} (re-reads {@code stratos-server.toml} and sends the weather again). The
- * server-side reload the roadmap asked for: {@code /atmosphera reload} covers client settings only.
+ * (back to the model) and {@code reload} (re-reads {@code stratos-server.toml} and sends the weather again; 0.4.4: the
+ * file is read here, Forge's file watcher was not reliable). The server-side reload the roadmap asked for: {@code /atmosphera reload}
+ * covers client settings only.
  */
 public final class StratosCommand {
     private StratosCommand() {
@@ -30,9 +31,13 @@ public final class StratosCommand {
             return 1;
         }));
         root.then(Commands.literal("reload").executes(ctx -> {
+            // 0.4.4 (B1): the file is re-read here; the 2026-11-16 server test saw Forge's watcher miss a saved edit.
+            boolean read = StratosServerConfig.reloadFromDisk();
             WeatherModel.tick(ctx.getSource().getLevel());
-            ctx.getSource().sendSuccess(() -> Component.literal("Stratos: settings read and the weather sent again."), true);
-            return 1;
+            ctx.getSource().sendSuccess(() -> Component.literal(read
+                    ? "Stratos: stratos-server.toml re-read and the weather sent again."
+                    : "Stratos: could not re-read stratos-server.toml (see the log); current settings applied and the weather sent again."), true);
+            return read ? 1 : 0;
         }));
         LiteralArgumentBuilder<CommandSourceStack> set = Commands.literal("set");
         for (Weather.Type type : Weather.Type.values()) {
@@ -46,7 +51,39 @@ public final class StratosCommand {
                             .executes(ctx -> set(ctx.getSource(), type, FloatArgumentType.getFloat(ctx, "intensity")))));
         }
         root.then(set);
+        // 0.4.1: /stratos forecast <seconds> [storm]: clear now, rain due in that many seconds (a thunderstorm with
+        // "storm"), through vanilla's own timers, so the forecast the clients see is the real one (tests, map makers).
+        root.then(Commands.literal("forecast").then(Commands.argument("seconds",
+                com.mojang.brigadier.arguments.IntegerArgumentType.integer(10, 3600))
+                .executes(ctx -> forecast(ctx.getSource(),
+                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "seconds"), false))
+                .then(Commands.literal("storm").executes(ctx -> forecast(ctx.getSource(),
+                        com.mojang.brigadier.arguments.IntegerArgumentType.getInteger(ctx, "seconds"), true)))));
         dispatcher.register(root);
+    }
+
+    private static int forecast(CommandSourceStack source, int seconds, boolean storm) {
+        ServerLevel level = source.getLevel();
+        if (!(level.getLevelData() instanceof net.minecraft.world.level.storage.ServerLevelData data)) {
+            return 0;
+        }
+        // 0.4.2: a dimension that shares the overworld's weather ignores these setters, so say so instead of a success.
+        if (data instanceof net.minecraft.world.level.storage.DerivedLevelData) {
+            source.sendFailure(Component.literal("Stratos: this dimension shares the overworld's weather; "
+                    + "run /stratos forecast in the overworld."));
+            return 0;
+        }
+        int ticks = seconds * 20;
+        data.setClearWeatherTime(0);
+        data.setRaining(false);
+        data.setRainTime(ticks);
+        data.setThundering(false);
+        // Thunder turns on 5 s before the rain (so the rain starts as a storm), or long after it.
+        data.setThunderTime(storm ? Math.max(1, ticks - 100) : ticks + 24000);
+        WeatherModel.tick(level);
+        source.sendSuccess(() -> Component.literal(String.format(Locale.ROOT, "Stratos: clear now; %s in %d s.",
+                storm ? "a thunderstorm" : "rain", seconds)), true);
+        return 1;
     }
 
     private static int set(CommandSourceStack source, Weather.Type type, float intensity) {
@@ -70,9 +107,15 @@ public final class StratosCommand {
             return 1;
         }
         long in = state.changeAt() < 0 ? -1 : (state.changeAt() - level.getGameTime()) / 20;
-        String text = String.format(Locale.ROOT, "Stratos: %s, intensity %.2f, wind x%.2f; next %s (%.2f) in %d s",
-                state.type().name().toLowerCase(Locale.ROOT), state.intensity(), state.windFactor(),
-                state.next().name().toLowerCase(Locale.ROOT), state.nextIntensity(), in);
+        String next = in < 0 ? "next change unknown"
+                : String.format(Locale.ROOT, "next %s (%.2f) in %d s",
+                        state.next().name().toLowerCase(Locale.ROOT), state.nextIntensity(), in);
+        // 0.4.1: thunder due within the current spell.
+        if (state.stormAt() >= 0) {
+            next += String.format(Locale.ROOT, "; thunder in %d s", (state.stormAt() - level.getGameTime()) / 20);
+        }
+        String text = String.format(Locale.ROOT, "Stratos: %s, intensity %.2f, wind x%.2f; %s",
+                state.type().name().toLowerCase(Locale.ROOT), state.intensity(), state.windFactor(), next);
         source.sendSuccess(() -> Component.literal(text), false);
         // 0.4.0: whether the spell is a sandstorm where the command's source stands.
         net.minecraft.core.BlockPos pos = net.minecraft.core.BlockPos.containing(source.getPosition());
